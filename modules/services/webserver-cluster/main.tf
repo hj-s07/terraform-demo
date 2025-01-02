@@ -14,12 +14,24 @@
   }
 }*/
 
-resource "aws_launch_template" "example" {
+/*resource "aws_launch_template" "example" {
   image_id               = "ami-042e76978adeb8c48"
   instance_type          = "t3.micro"
   vpc_security_group_ids = [aws_security_group.instance.id]
 
   user_data = filebase64("user-data.sh") #launch_template의 경우 직접 작성 불가
+}*/
+
+resource "aws_launch_template" "example" { #encode해줘야 함
+  image_id               = "ami-042e76978adeb8c48"
+  instance_type          = "t3.micro"
+  vpc_security_group_ids = [aws_security_group.instance.id]
+
+  user_data = base64encode(templatefile("${path.module}/user-data.sh", {
+  server_port = var.server_port
+  db_address = data.terraform_remote_state.db.outputs.address
+  db_port = data.terraform_remote_state.db.outputs.port
+}))
 }
 
 #aws_autoscaling_group
@@ -34,13 +46,13 @@ resource "aws_autoscaling_group" "example" {
   max_size            = 10
   tag {
     key                 = "Name"
-    value               = "terraform-asg-example"
+    value               = "${var.cluster_name}-asg"
     propagate_at_launch = true
-  }
+}
 }
 #
 resource "aws_lb" "example" {
-  name               = "terraform-asg-example"
+  name               = "${var.cluster_name}-lb"
   load_balancer_type = "application"
   subnets            = data.aws_subnets.default.ids
   security_groups    = [aws_security_group.alb.id] #security_groups 인수를 통해 이 보안 그룹을 사용하도록 aws_lb 리소스에 알림
@@ -48,7 +60,7 @@ resource "aws_lb" "example" {
 #
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.example.arn
-  port              = 80
+  port              = local.http_port
   protocol          = "HTTP"
   # By default, return a simple 404 page
   default_action {
@@ -62,20 +74,20 @@ resource "aws_lb_listener" "http" {
 }
 #
 resource "aws_security_group" "alb" {
-  name = "terraform-example-alb"
+  name = "${var.cluster_name}-alb-sg"
   # Allow inbound HTTP requests
   ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    from_port   = local.http_port
+    to_port     = local.http_port
+    protocol    = local.tcp_protocol
+    cidr_blocks = local.all_ips
   }
   # Allow all outbound requests
   egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    from_port   = local.any_port
+    to_port     = local.any_port
+    protocol    = local.any_protocol
+    cidr_blocks = local.all_ips
   }
 }
 #
@@ -95,7 +107,7 @@ resource "aws_lb_listener_rule" "asg" {
 
 #aws_security_group
 resource "aws_security_group" "instance" {
-  name = "terraform-example-instance"
+  name = "${var.cluster_name}-instance-sg"
 
   ingress {
     from_port   = var.server_port
@@ -105,8 +117,8 @@ resource "aws_security_group" "instance" {
   }
 }
 
-resource "aws_lb_target_group" "asg" { #autoscaling_group 부분 확인
-  name     = "terraform-asg-example"
+resource "aws_lb_target_group" "asg" {
+  name = "${var.cluster_name}-asg"
   port     = var.server_port
   protocol = "HTTP"
   vpc_id   = data.aws_vpc.default.id
@@ -130,4 +142,13 @@ data "aws_subnets" "default" {
     name   = "vpc-id"
     values = [data.aws_vpc.default.id]
   }
+}
+
+data "terraform_remote_state" "db" { #db에 대한 state 정보가 s3에 저장됨
+ backend = "s3"
+ config = {
+ bucket = "terraform-ssg-wl"
+ key = "stage/data-stores/mysql/terraform.tfstate"
+ region = "ap-northeast-2"
+ }
 }
